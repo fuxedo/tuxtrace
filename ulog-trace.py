@@ -37,30 +37,36 @@ def read_tmtrace(tracefile):
         msec += int('0' + seconds[7:])
         yield (msec, process, enter_leave, func, params)
 
-class Timing:
+class CallTiming:
     count = None
+    errors = None
     total = None
 
-    def __init__(self, count=0, total=0.0):
+    def __init__(self, count=0, total=0.0, errors=0):
         self.count = count
         self.total = total
+        self.errors = errors
 
     def update(self, other):
         self.count += other.count
         self.total += other.total
+        self.errors += other.errors
 
-class ServiceTiming(Timing):
+class ServiceTiming:
+    count = 0
+    errors = 0
+    total = 0
     calls = None
     acalls = None
 
-    def __init__(self, count, total, calls, acalls):
-        Timing.__init__(self, count, total)
+    def __init__(self, count, total, error, calls, acalls):
         self.calls = dict(calls)
         self.acalls = dict(acalls)
 
-    def update(self, count, total, calls, acalls):
+    def update(self, count, total, error, calls, acalls):
         self.count += count
         self.total += total
+        self.errors += error
         for k, v in calls.items():
             try:
                 self.calls[k].update(v)
@@ -78,6 +84,7 @@ class ServiceContext:
     end_time = None
     calls = None
     acalls = None
+    error = 0
 
     call_name = None
     call_start_time = None
@@ -94,13 +101,13 @@ class ServiceContext:
         self.call_start_time = time
         self.call_name = 'svc:'+name
     def endCall(self, time):
-        t = Timing(1, time - self.call_start_time)
+        t = CallTiming(1, time - self.call_start_time)
         try:
             self.calls[self.call_name].update(t)
         except KeyError:
             self.calls[self.call_name] = t
     def endAcall(self, time):
-        t = Timing(1, time - self.call_start_time)
+        t = CallTiming(1, time - self.call_start_time)
         try:
             self.acalls[self.call_name].update(t)
         except KeyError:
@@ -123,6 +130,13 @@ def collect_timings(tracefile):
                     except KeyError:
                         processes[process] = ServiceContext(msec, 'proc:'+process.split('.')[0])
                         processes[process].startCall(msec, re_service_name.search(params).group(1))
+                elif func == 'tpreturn':
+                    # TPSUCCESS == 2
+                    if not params.startswith('(2, '):
+                        try:
+                            processes[process].error = 1
+                        except KeyError:
+                            pass
 
             elif enter_leave == '}':
                 if func == 'tpservice':
@@ -130,9 +144,9 @@ def collect_timings(tracefile):
                     del processes[process]
                     ctx.end_time = msec
                     try:
-                        timings[ctx.name].update(1, ctx.elapsed(), ctx.calls, ctx.acalls)
+                        timings[ctx.name].update(1, ctx.elapsed(), ctx.error, ctx.calls, ctx.acalls)
                     except KeyError:
-                        timings[ctx.name] = ServiceTiming(1, ctx.elapsed(), ctx.calls, ctx.acalls)
+                        timings[ctx.name] = ServiceTiming(1, ctx.elapsed(), ctx.error, ctx.calls, ctx.acalls)
                 elif func == 'tpcall':
                     processes[process].endCall(msec)
                 elif func == 'tpacall':
@@ -140,9 +154,9 @@ def collect_timings(tracefile):
 
     for process, ctx in processes.items():
         try:
-            timings[ctx.name].update(0, 0, ctx.calls, ctx.acalls)
+            timings[ctx.name].update(0, 0, 0, ctx.calls, ctx.acalls)
         except KeyError:
-            timings[ctx.name] = ServiceTiming(0, 0, ctx.calls, ctx.acalls)
+            timings[ctx.name] = ServiceTiming(0, 0, 0, ctx.calls, ctx.acalls)
     return timings
 
 def do_service_graph(tracefile, outfile):
@@ -181,12 +195,14 @@ def do_service_graph(tracefile, outfile):
 def do_service_timing(tracefile):
     timings = collect_timings(tracefile)
 
-    array = [(name.split(':')[-1], timing.count, timing.total, timing.calls.items(), timing.acalls.items()) \
+    array = [(name.split(':')[-1], timing.count, timing.total, timing.errors, timing.calls.items(), timing.acalls.items()) \
             for  name, timing in timings.items() if name.startswith('svc:')]
     array.sort(key=lambda x:x[2])
 
-    for name, count, total, calls, acalls in reversed(array):
-        print('%-26s     %6d  %f' % (name, count, long(total)/1000.))
+    print('Service                         Count/Errors  Time')
+    print('------------------------------------------------------')
+    for name, count, total, errors, calls, acalls in reversed(array):
+        print('%-26s     %6d/%-6d  %f' % (name, count, errors, long(total)/1000.))
         childs = []
         childs += [('tpcall(%s)' % name.split(':')[-1], timing.count, timing.total) for name, timing in calls]
         childs += [('tpacall(%s)' % name.split(':')[-1], timing.count, timing.total) for name, timing in acalls]
@@ -194,7 +210,7 @@ def do_service_timing(tracefile):
         # Sort by timing.total (descending)
         childs.sort(key=lambda x:-x[2])
         for name, count, total in childs:
-            print('    %-26s %6d  %f' % (name, count, long(total)/1000.))
+            print('    %-26s %6d         %f' % (name, count, long(total)/1000.))
 
 def main():
     from optparse import OptionParser
