@@ -77,7 +77,7 @@ python ulog-trace.py -G log/ULOG.040516 -O callgraph.png
 
 Gives output like this one (for my simplified demo application):
 
-[](http://aivarsk.github.io/public/callgraph.png)
+![](http://aivarsk.github.io/public/callgraph.png)
 
 Line represents a tpcall() and a dashed line represents a tpacall()
 
