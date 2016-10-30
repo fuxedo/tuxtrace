@@ -99,10 +99,12 @@ python ulog-trace.py --graphite 127.0.0.1:2003
 
 For each service it reports following metrics:
 
+```
 Tuxedo.$SERVICE.calls
 Tuxedo.$SERVICE.errors
 Tuxedo.$SERVICE.tottime
 Tuxedo.$SERVICE.cumtime
+```
 
 
 #### AppDynamics
@@ -115,10 +117,11 @@ python ulog-trace.py --appdynamics http://127.0.0.1:7890/api/v1/metrics
 
 For each service it reports following metrics:
 
+```
 Custom Metrics|Tuxedo|Services|$SERVICE|Number of Calls
 Custom Metrics|Tuxedo|Services|$SERVICE|Failures
 Custom Metrics|Tuxedo|Services|$SERVICE|Total Time (msec)
 Custom Metrics|Tuxedo|Services|$SERVICE|Cumulative Time (msec)
-
+```
 
 You will also need [machine-agent with HTTP listener enabled](https://docs.appdynamics.com/display/PRO42/Standalone+Machine+Agent+HTTP+Listener)
