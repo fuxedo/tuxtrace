@@ -21,21 +21,59 @@
 import sys
 import re
 
-# When a trace record appears in the user log, the line looks like this:
-# hhmmss.system-name!process-name.pid: TRACE:cc:data
-# ULOGMILLISEC=Y; export ULOGMILLISEC
-re_trace = re.compile('(\d\d\d\d\d\d(\.\d\d\d)?).*!([^ ]+): .*TRACE:(at|ia): [ ]*([{}]) ([a-z]+)(.*)')
+from collections import defaultdict
 
-def read_tmtrace(tracefile):
-    for line in open(tracefile).xreadlines():
-        line = line.rstrip()
-        m = re_trace.match(line)
-        if not m:
-            continue
-        seconds, _, process, _, enter_leave, func, params = m.groups()
-        msec = ((int(seconds[0:2]) * 60 * 60) + (int(seconds[2:4]) * 60) + int(seconds[4:6])) * 1000
-        msec += int('0' + seconds[7:])
-        yield (msec, process, enter_leave, func, params)
+import time
+import subprocess
+
+class Ulog:
+    def __init__(self):
+        self.config = subprocess.check_output(['tmunloadcf'])
+        self.ulogpfx = self.config.split('ULOGPFX="')[-1].split('"')[0]
+        self.fname = self._getname()
+        try:
+            self.fp = open(self.fname)
+            self.fp.seek(0, 2)
+        except:
+            self.fb = None
+        self.data = ''
+
+    def _getname(self):
+        return self.ulogpfx + '.' + time.strftime('%m%d%y', time.localtime())
+
+    def _read(self):
+        if not self.fp:
+            self.fname = self._getname()
+            try:
+                self.fp = open(self.fname)
+            except:
+                return ''
+        
+        data = self.fp.read()
+        if data:
+            return data
+        fname = self._getname()
+        if self.fname != fname:
+            self.fp = None
+
+    def readline(self):
+        n = self.data.find('\n')
+        if n != -1:
+            line = self.data[:n]
+            self.data = self.data[n+1:]
+            return line
+
+        data = self._read()
+        if data:
+            self.data += data
+            return self.readline()
+        return None
+
+    def readtrace(self):
+        while True:
+            line = self.readline()
+            if line is None or 'TRACE:' in line:
+                return line
 
 class CallTiming:
     count = None
@@ -59,9 +97,9 @@ class ServiceTiming:
     calls = None
     acalls = None
 
-    def __init__(self, count, total, error, calls, acalls):
-        self.calls = dict(calls)
-        self.acalls = dict(acalls)
+    def __init__(self):
+        self.calls = {}
+        self.acalls = {}
 
     def update(self, count, total, error, calls, acalls):
         self.count += count
@@ -113,51 +151,87 @@ class ServiceContext:
         except KeyError:
             self.acalls[self.call_name] = t
 
-def collect_timings(tracefile):
+class Collector:
     processes = {}
     timings = {}
-
+    # When a trace record appears in the user log, the line looks like this:
+    # hhmmss.system-name!process-name.pid: TRACE:cc:data
+    # ULOGMILLISEC=Y; export ULOGMILLISEC
+    re_trace = re.compile('(\d\d\d\d\d\d(\.\d\d\d)?).*!([^ ]+): .*TRACE:(at|ia): [ ]*([{}]) ([a-z]+)(.*)')
     re_service_name = re.compile('"(.+)"')
-    for x in read_tmtrace(tracefile):
-        if x:
-            msec, process, enter_leave, func, params = x
-            if enter_leave == '{':
-                if func == 'tpservice':
-                    processes[process] = ServiceContext(msec, 'svc:'+re_service_name.search(params).group(1))
-                elif func in ('tpcall', 'tpacall'):
-                    try:
-                        processes[process].startCall(msec, re_service_name.search(params).group(1))
-                    except KeyError:
-                        processes[process] = ServiceContext(msec, 'proc:'+process.split('.')[0])
-                        processes[process].startCall(msec, re_service_name.search(params).group(1))
-                elif func == 'tpreturn':
-                    # TPSUCCESS == 2
-                    if not params.startswith('(2, '):
-                        try:
-                            processes[process].error = 1
-                        except KeyError:
-                            pass
 
-            elif enter_leave == '}':
-                if func == 'tpservice':
-                    ctx = processes[process]
-                    del processes[process]
-                    ctx.end_time = msec
-                    try:
-                        timings[ctx.name].update(1, ctx.elapsed(), ctx.error, ctx.calls, ctx.acalls)
-                    except KeyError:
-                        timings[ctx.name] = ServiceTiming(1, ctx.elapsed(), ctx.error, ctx.calls, ctx.acalls)
-                elif func == 'tpcall':
-                    processes[process].endCall(msec)
-                elif func == 'tpacall':
-                    processes[process].endAcall(msec)
+    def __init__(self):
+        self.reset()
 
-    for process, ctx in processes.items():
-        try:
-            timings[ctx.name].update(0, 0, 0, ctx.calls, ctx.acalls)
-        except KeyError:
-            timings[ctx.name] = ServiceTiming(0, 0, 0, ctx.calls, ctx.acalls)
-    return timings
+    def reset(self):
+        self.timings = defaultdict(ServiceTiming)
+
+    def parse_line(self, line):
+        m = self.re_trace.match(line)
+        if not m:
+            return
+        timestamp, _, process, _, enter_leave, func, params = m.groups()
+        msec = self._parse_timestamp(timestamp)
+        self.collect(msec, process, enter_leave, func, params)
+
+    def _parse_timestamp(self, timestamp):
+        """
+        h, m, s = int(timestamp[0:2], 10), int(timestamp[2:4], 10), int(timestamp[4:6], 10)
+        msec = ((((h * 60) + m) * 60) + s) * 1000
+        msec += int('0' + timestamp[7:])
+        """
+        n = int(timestamp[:6], 10)
+        h = n / 10000
+        n = n % 10000
+        m = n / 100
+        s = n % 100
+        msec = ((((h * 60) + m) * 60) + s) * 1000
+        msec += int(timestamp[7:], 10)
+        return msec
+
+    def collect(self, msec, process, enter_leave, func, params):
+        if enter_leave == '{':
+            if func == 'tpservice':
+                self.processes[process] = ServiceContext(msec, 'svc:'+self.re_service_name.search(params).group(1))
+            elif func in ('tpcall', 'tpacall'):
+                try:
+                    self.processes[process].startCall(msec, self.re_service_name.search(params).group(1))
+                except KeyError:
+                    self.processes[process] = ServiceContext(msec, 'proc:'+process.split('.')[0])
+                    self.processes[process].startCall(msec, self.re_service_name.search(params).group(1))
+            elif func == 'tpreturn':
+                # TPSUCCESS == 2
+                if not params.startswith('(2, '):
+                    try:
+                        self.processes[process].error = 1
+                    except KeyError:
+                        pass
+
+        elif enter_leave == '}':
+            if func == 'tpservice':
+                ctx = self.processes[process]
+                del self.processes[process]
+                ctx.end_time = msec
+                self.timings[ctx.name].update(1, ctx.elapsed(), ctx.error, ctx.calls, ctx.acalls)
+            elif func == 'tpcall':
+                try: self.processes[process].endCall(msec)
+                except KeyError: pass
+            elif func == 'tpacall':
+                try: self.processes[process].endAcall(msec)
+                except KeyError: pass
+
+    def finalize(self):
+        for process, ctx in self.processes.items():
+            self.timings[ctx.name].update(0, 0, 0, ctx.calls, ctx.acalls)
+        return self.timings
+
+def collect_timings(tracefile):
+    c = Collector()
+
+    for line in open(tracefile).xreadlines():
+        c.parse_line(line)
+
+    return c.finalize()
 
 def do_service_graph(tracefile, outfile):
     try:
@@ -212,14 +286,47 @@ def do_service_timing(tracefile):
         for name, count, total in childs:
             print('    %-26s %6d         %f' % (name, count, long(total)/1000.))
 
+def do_report(send):
+    import urllib
+    import json
+
+    c = Collector()
+    ulog = Ulog()
+
+    interval = 60
+    finish = time.time() + interval
+    while True:
+
+        # Collect data for specified interval
+        while time.time() < finish:
+            line = ulog.readtrace()
+            if line is None:
+                time.sleep(0.1)
+            else:
+                c.parse_line(line)
+
+        finish += interval
+        timings = c.timings
+        c.reset()
+
+        array = [(name.split(':')[-1], timing.count, timing.total, timing.errors, timing.calls.items(), timing.acalls.items()) \
+                for  name, timing in timings.items() if name.startswith('svc:')]
+        send(array)
+
 def main():
     from optparse import OptionParser
-    parser = OptionParser(usage='Usage: %prog [options] <ULOG file>', version='%prog 1.0')
+    parser = OptionParser(usage='Usage: %prog [options]', version='%prog 1.0')
     parser.add_option('-G', '--graph',
-            action='store_true', dest='graph',
+            dest='graph',
             help='Produce service call graph')
+    parser.add_option('--appdynamics',
+            dest='appdynamics',
+            help='Report to AppDynamics')
+    parser.add_option('--graphite',
+            dest='graphite',
+            help='Report to Graphite')
     parser.add_option('-T', '--timing',
-            action='store_true', dest='timing',
+            dest='timing',
             help='Produce service timings')
     parser.add_option('-O', '--output',
             dest='out',
@@ -227,11 +334,7 @@ def main():
 
     (options, args) = parser.parse_args()
 
-    if len(args) != 1:
-        parser.error('Please specify input ULOG filename')
-
-    
-    if len([fmt for fmt in (options.graph, options.timing) if fmt]) > 1:
+    if len([fmt for fmt in (options.graph, options.timing, options.appdynamics, options.graphite) if fmt]) > 1:
         parser.error('Please select only one output type')
     
 
@@ -239,9 +342,63 @@ def main():
         parser.error('Please specify an output filename with "-O file.png" or "--output=file.png"')
 
     if options.graph:
-        do_service_graph(args[0], options.out)
+        do_service_graph(options.graph, options.out)
     elif options.timing:
-        do_service_timing(args[0])
+        do_service_timing(options.timing)
+    elif options.appdynamics:
+        def send(array):
+            metrics = []
+            for name, count, total, errors, calls, acalls in reversed(array):
+                metrics.extend([
+                    {
+                        'metricName': 'Custom Metrics|Tuxedo|' + 'Services|%s|Number of Calls' % name,
+                        'aggregatorType': 'SUM',
+                        'value': count,
+                    }, {
+                        'metricName': 'Custom Metrics|Tuxedo|' + 'Services|%s|Failures' % name,
+                        'aggregatorType': 'SUM',
+                        'value': errors,
+                    }, {
+                        'metricName': 'Custom Metrics|Tuxedo|' + 'Services|%s|Total Time (msec)' % name,
+                        'aggregatorType': 'SUM',
+                        'value': total-sum([timing.total for _, timing in calls+acalls]),
+                    }, {
+                        'metricName': 'Custom Metrics|Tuxedo|' + 'Services|%s|Cumulative Time (msec)' % name,
+                        'aggregatorType': 'SUM',
+                        'value': total,
+                    }
+                ])
+
+            try:
+                urllib.urlopen(options.appdynamics, json.dumps(metrics))
+                print 'Reported %d metrics' % (len(metrics))
+            except IOError, e:
+                print e
+
+        do_report(send)
+    elif options.graphite:
+        def send(array):
+            metrics = []
+            now = int(time.time())
+            for name, count, total, errors, calls, acalls in reversed(array):
+                name = name.replace('.', '_')
+                metrics.append('Tuxedo.%s.calls %f %d' % (name, count, now))
+                metrics.append('Tuxedo.%s.errors %f %d' % (name, errors, now))
+                metrics.append('Tuxedo.%s.tottime %f %d' % (name, total-sum([timing.total for _, timing in calls+acalls]), now))
+                metrics.append('Tuxedo.%s.cumtime %f %d' % (name, total, now))
+
+            try:
+                from socket import socket
+                sock = socket()
+                host, port= options.graphite.split(':')
+                sock.connect((host, int(port)))
+                sock.sendall('\n'.join(metrics) + '\n')
+                print 'Reported %d metrics' % (len(metrics))
+            except IOError, e:
+                print e
+
+
+        do_report(send)
     else:
         parser.error('No output type selected')
 
