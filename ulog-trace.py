@@ -382,10 +382,10 @@ def main():
             now = int(time.time())
             for name, count, total, errors, calls, acalls in reversed(array):
                 name = name.replace('.', '_')
-                metrics.append('Tuxedo.%s.calls %f %d' % (name, count, now))
-                metrics.append('Tuxedo.%s.errors %f %d' % (name, errors, now))
-                metrics.append('Tuxedo.%s.tottime %f %d' % (name, total-sum([timing.total for _, timing in calls+acalls]), now))
-                metrics.append('Tuxedo.%s.cumtime %f %d' % (name, total, now))
+                metrics.append('Tuxedo.Services.%s.calls %f %d' % (name, count, now))
+                metrics.append('Tuxedo.Services.%s.errors %f %d' % (name, errors, now))
+                metrics.append('Tuxedo.Services.%s.tottime %f %d' % (name, total-sum([timing.total for _, timing in calls+acalls]), now))
+                metrics.append('Tuxedo.Services.%s.cumtime %f %d' % (name, total, now))
 
             try:
                 from socket import socket

@@ -42,7 +42,7 @@ Now you are ready to analyze your application!
 python ulog-trace.py -T log/ULOG.040516
 ```
 
-For the same demo application gives:
+For my demo application gives:
 
 ```
 HUB                                40  3.458000
@@ -62,8 +62,6 @@ number of times it was performed and cummulative time spent. One thing to
 notice is that service OUT executed for 1.734 seconds but caller spent 1.746
 seconds calling it. It's due to time request and response messages spend in IPC
 queues and the difference is even bigger for systems under load.
-
-The first number is number of times service is called
 
 
 ### Callgraph
@@ -100,10 +98,10 @@ python ulog-trace.py --graphite 127.0.0.1:2003
 For each service it reports following metrics:
 
 ```
-Tuxedo.$SERVICE.calls
-Tuxedo.$SERVICE.errors
-Tuxedo.$SERVICE.tottime
-Tuxedo.$SERVICE.cumtime
+Tuxedo.Services.$SERVICE.calls
+Tuxedo.Services.$SERVICE.errors
+Tuxedo.Services.$SERVICE.tottime
+Tuxedo.Services.$SERVICE.cumtime
 ```
 
 
