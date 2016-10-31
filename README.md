@@ -1,5 +1,6 @@
 # tuxtrace
-DIY Oracle Tuxedo monitoring
+
+DIY Oracle Tuxedo monitoring as [I write time from time](http://aivarsk.github.io/).
 
 ## ulog-trace.py
 
