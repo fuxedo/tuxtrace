@@ -1,0 +1,55 @@
+#!/usr/bin/env bpftrace
+/*
+ * msg_latency.bt
+ *
+ * Show how much time a message sent by msgsnd() spent in the queue
+ * before being received by msgrcv()
+ *
+ * For Linux, uses bpftrace, eBPF.
+ *
+ * 2024-05-01 aivars.kalvans@gmail.com https://aivarsk.com
+ */
+
+// If you have complaints about this, install bpftrace-dbgsym
+// https://github.com/bpftrace/bpftrace/issues/2168#issuecomment-1230499942
+BEGIN
+{
+    printf("PID       COMM              MSQID     TIME(ns)\n");
+}
+
+// Start of sending the message
+kfunc:do_msgsnd
+{
+    @start[tid] = nsecs;
+}
+
+// Store the time of msgsnd() with the message
+kretfunc:load_msg
+/@start[tid]/
+{
+    @msgs[retval] = @start[tid];
+    delete(@start[tid]);
+}
+
+// Just store the msqid for later
+kfunc:do_msgrcv
+{
+    @msqid[tid] = args->msqid;
+}
+
+// Retrieve the time of msgsnd() from the message
+kfunc:store_msg
+/@msgs[args->msg]/
+{
+    @start[tid] = @msgs[args->msg];
+    delete(@msgs[args->msg]);
+}
+
+// Print some info for successful msgrcv()
+kretfunc:do_msgrcv
+/@start[tid] && @msqid[tid]/
+{
+    printf("%-8d  %-16s  %-8d  %lld\n", pid, comm, @msqid[tid], nsecs - @start[tid]);
+    delete(@start[tid]);
+    delete(@msqid[tid]);
+}
